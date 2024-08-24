@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset = utf-8>
+	<title>SVG Path Editor</title>
+	<style>
+		* {
+			margin: 0px;
+			padding: 0px;
+			box-sizing: border-box;
+			font-family: Consolas, 'Courier New', Courier, monospace;
+		}
+		body {
+            color: #22eeff;
+			background-color: #111111;
+			white-space: pre;
+			overflow: hidden;
+		}
+
+        #canvas-main {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+        #log {
+            position: absolute;
+            top: 1vmax;
+            left: 1vmax;
+            font-size: 12px;
+        }
+
+        #crosshair-v {
+            background-color: #ffffff88;
+
+            display: inline-block;
+            position: absolute;
+            width: 1px;
+            height: 100%;
+            top: 0;
+            left: 50%;
+        }
+        #crosshair-h {
+            background-color: #ffffff88;
+
+            display: inline-block;
+            position: absolute;
+            width: 100%;
+            height: 1px;
+            top: 50%;
+            left: 0;
+        }
+
+		.hidden {
+			visibility: hidden;
+		}
+	</style>
+</head>
+<body>
+
+
+<canvas id='canvas-main'></canvas>
+<div id='crosshair-v'></div>
+<div id='crosshair-h'></div>
+<div id='log'></div>
+
+<script type="text/javascript">
+
+    // vector maths
+    class Vec2 {
+        constructor (x,y) {
+            this.x = x ?? 0;
+            this.y = y ?? 0;
+        }
+
+        get length () { return Math.sqrt(this.x*this.x + this.y*this.y); }
+
+        set (x,y) {
+            this.x = x ?? this.x ?? 0;
+            this.y = y ?? this.y ?? 0;
+            return this;
+        }
+        copy (v) {
+            this.x = v.x ?? this.x ?? 0;
+            this.y = v.y ?? this.y ?? 0;
+            return this;
+        }
+        clone () {
+            return new Vec2(this.x,this.y);
+        }
+
+        normalize () {
+            const len = Math.sqrt(this.x*this.x + this.y*this.y);
+            const fac = 1 / len;
+            this.x *= fac;
+            this.y *= fac;
+            return this;
+        }
+        clamp (max) {
+            const len = Math.sqrt(this.x*this.x + this.y*this.y);
+            if (len > max) {
+                const fac = max / len;
+                this.x *= fac;
+                this.y *= fac;
+            }
+            return this;
+        }
+        setMag (mag) {
+            const len = Math.sqrt(this.x*this.x + this.y*this.y);
+            const fac = mag / len;
+            this.x *= fac;
+            this.y *= fac;
+            return this;
+        }
+
+        add (v) {
+            this.x += v.x ?? 0;
+            this.y += v.y ?? 0;
+            return this;
+        }
+        sub (v) {
+            this.x -= v.x ?? 0;
+            this.y -= v.y ?? 0;
+            return this;
+        }
+        mul (v) {
+            this.x *= v.x ?? 1;
+            this.y *= v.y ?? 1;
+            return this;
+        }
+        div (v) {
+            this.x /= v.x ?? 1;
+            this.y /= v.y ?? 1;
+            return this;
+        }
+
+        scale (s) {
+            this.x *= s ?? 1;
+            this.y *= s ?? 1;
+            return this;
+        }
+    }
+
+    // DOM
+    const crosshairH = document.getElementById('crosshair-h');
+    const crosshairV = document.getElementById('crosshair-v');
+
+    // log
+    const log = document.getElementById('log');
+    let logText = [];
+
+    // canvas
+    const cv = document.getElementById('canvas-main');
+    cv.width = window.innerWidth;
+    cv.height = window.innerHeight;
+    const ctx = cv.getContext('2d');
+    // canvas helpers
+    let cx0 = Math.round(window.innerWidth / 2);
+    let cy0 = Math.round(window.innerHeight / 2);
+
+    // mouse updates
+	let mouse = {
+        x : cx0,
+        y : cy0,
+        cartesianX : 0,
+        cartesianY : 0,
+        vec : new Vec2(cx0,cy0)
+    };
+    window.addEventListener('mousemove', e => {
+        mouse.x = e.clientX;
+        mouse.y = e.clientY;
+        mouse.cartesianX = e.clientX - (window.innerWidth/2);
+        mouse.cartesianY = (window.innerHeight/2) - e.clientY;
+        mouse.vec.set(e.clientX,e.clientY);
+    });
+    // window updates
+    function onResize () {
+        cv.width = window.innerWidth;
+        cv.height = window.innerHeight;
+        cx0 = window.innerWidth / 2;
+        cy0 = window.innerHeight / 2;
+    }
+    window.addEventListener('resize', e => {
+        onResize();
+    });
+
+    // helper functions
+    function clamp (min,s,max) {
+        return Math.min(Math.max(min, s), max);
+    }
+
+
+
+    //// SVG PATHS ////
+    
+    const SVG_UNLOCKED = 'M 20 45 L 20 85 L 80 85 L 80 45 L 38 45 L 38 25 C 38 19 43 14 50 14 C 57 14,62 19,62 25L 62 35 L 72 35 L 72 25 C 72 13 62 5 50 5 C 38 5 28 13 28 25 L 28 45 Z';
+
+    const REGEX_SEGMENTS = /([MLHVZCSQTAmlhvzcsqta](?:[ ,\t]*\d+\.?\d*?)*)+?/g; // matchall valid letter followed by zero or more space-seperated numbers, decimals allowed (3, 3., 3.5)
+    // const REGEX_CMDS = /(?:([ML]) (\d+\.?\d*) (\d+\.?\d*))*/g; // matchall any number of 2-arg commands, for commands M and L
+
+    class SegMove {
+        constructor (x,y, relative=false) {
+            this.type = 'M';
+            this.relative = relative;
+            this.points = [{x:x,y:y}];
+        }
+        get svgStr () { return `${this.relative ? 'm' : 'M'} ${this.points[0].x} ${this.points[0].y}`; }
+        draw () {
+            ctx.moveTo(this.points[0].x, this.points[0].y);
+        }
+    }
+    class SegLine {
+        constructor (x,y, relative=false) {
+            this.type = 'L';
+            this.relative = relative;
+            this.points = [{x:x,y:y}];
+        }
+        get svgStr () { return `${this.relative ? 'l' : 'L'} ${this.points[0].x} ${this.points[0].y}`; }
+        draw () {
+            ctx.lineTo(this.points[0].x, this.points[0].y);
+        }
+    }
+    class SegCubicBezier {
+        constructor (c1x,c1y,c2x,c2y,x,y, relative=false) {
+            this.type = 'M';
+            this.relative = relative;
+            this.points = [{x:c1x,y:c1y},{x:c2x,y:c2y},{x:x,y:y}];
+        }
+        get svgStr () { return `${this.relative ? 'c' : 'C'} ${this.points[0].x} ${this.points[0].y} ${this.points[1].x} ${this.points[1].y} ${this.points[2].x} ${this.points[2].y}`; }
+        draw () {
+            ctx.bezierCurveTo(this.points[0].x,this.points[0].y, this.points[1].x,this.points[1].y, this.points[2].x,this.points[2].y);
+        }
+    }
+    class SegClose {
+        constructor (relative=false) {
+            this.type = 'Z';
+            this.relative = relative;
+        }
+        get svgStr () { return `${this.relative ? 'z' : 'Z'}`; }
+        draw () {
+            ctx.closePath();
+        }
+    }
+
+    class PathSVG {
+        constructor (path) {
+            this.segments = []; // array of { type : '', points : [] }
+            this.addPath(path);
+        }
+        get svgStr () {
+            let pathArray = [];
+            for (let segment of this.segments) {
+                pathArray.push(segment.svgStr);
+            }
+            return pathArray.join(' ');
+        }
+        get startPoint () {
+            return (this.segments.length > 0 && this.segments[0].type == 'M')
+                ? { x:this.segments[0].points[0], y:this.segments[0].points[1] }
+                : { x:0, y:0 };
+        }
+        isValidSegment (i) {
+            // return ;
+        }
+        addSegment (segStr,at=-1) {
+            const args = segStr.split(/[ ,\t]+/g); // split on whitespace or commas, since commas are allowed between coord pairs for curves
+            let seg;
+            switch (args[0]) {
+                case 'M': seg = new SegMove(...args.slice(1,3)); break;
+                case 'L': seg = new SegLine(...args.slice(1,3)); break;
+                case 'C': seg = new SegCubicBezier(...args.slice(1,7)); break;
+                case 'Z': seg = new SegClose(); break;
+            }
+            if (at >= 0) {
+                this.segments.splice(at,0,seg);
+            } else {
+                this.segments.push(seg);
+            }
+        }
+        addPath (path) {
+            const match = path.matchAll(REGEX_SEGMENTS);
+            for (let segment of match) {
+                this.addSegment(segment[0]);
+            }
+        }
+
+        drawStroke (color) {
+            if (color) ctx.strokeStyle = color;
+            ctx.beginPath();
+            for (let segment of this.segments) {
+                segment.draw();
+            }
+            ctx.stroke();
+        }
+        drawFill (color) {
+            if (color) ctx.fillStyle = color;
+            ctx.beginPath();
+            for (let segment of this.segments) {
+                segment.draw();
+            }
+            ctx.fill();
+        }
+    }
+
+    let path = new PathSVG(SVG_UNLOCKED);
+    for (let seg of path.segments) {
+        console.log(seg.svgStr);
+    }
+    ctx.translate(cx0,cy0);
+    path.drawFill('#ff0000');
+    ctx.translate(-100,-100);
+    path.drawStroke('#ff0000');
+
+
+    // uppercase letter is absolute coords, lowercase is relative coords
+
+    // move to "M x y" or "m dx dy"
+    // line to "L x y" or "l dx dy"
+    // horizontal line "H x" or "h dx"
+    // vertical line "V y" or "v dy"
+    // close path "Z" or "z"
+
+    // cubic bezier curve "C c1x c1y, c2x c2y, x y" or "c c1dx c1dy, c2dx c2dy, dx dy"
+    // smooth cubic bezier "S c2x c2y, x y" or "s c2dx c2dy, dx dy" (first control point mirrors prev curve's second control point to create constant slope across join) (if not used after C or S, first control point will be same as startpoint)
+    // quadratic bezier "Q cx cy, x y" or "q cdx cdy, dx dy" (endpoint also relative to startpoint, not to control point)
+    // tangent curve (smooth quadratic bezier) "T x y" or "t dx dy" (control point mirrors prev curve's control point to create constant slope acoss join)
+
+    // arc "A rx ry xRotation largeArcFlag sweepFlag x y"
+
+
+
+	//// INIT ////
+
+    //
+
+    // update
+	function animate () {
+
+		requestAnimationFrame(animate);
+        const t0_frame = performance.now();
+
+        // draw
+        // ctx.clearRect(0,0, cv.width,cv.height);
+        //
+
+        // log
+        const MSPT = performance.now() - t0_frame;
+        const MFPS = 1000 / MSPT;
+        logText = [
+            `MSPT : ${MSPT.toFixed()} ms`,
+            `MFPS : ${MFPS.toFixed()}`,
+            ``,
+            `CurPos : (${mouse.x},${mouse.y})`,
+            ``,
+            `[d] to toggle debug info`
+        ];
+        log.innerHTML = logText.join('\n');
+
+	}
+    // renderBoids();
+	animate();
+
+    // controls
+    window.addEventListener('keydown', e => {
+        switch (e.key) {
+        // debug
+        case 'd':
+            if (log.style.visibility=='hidden') {
+                log.style.visibility = crosshairH.style.visibility = crosshairV.style.visibility = 'visible';
+            } else {
+                log.style.visibility = crosshairH.style.visibility = crosshairV.style.visibility = 'hidden';
+            }
+            break;
+        case '`':
+            console.log('DBG : debug key');
+            break;
+        }
+    });
+
+
+
+</script>
+
+</body>
+</html>
