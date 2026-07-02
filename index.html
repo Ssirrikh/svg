@@ -17,11 +17,31 @@
 			overflow: hidden;
 		}
 
-        #canvas-main {
+        .flex-row {
+            display: flex;
+            flex-direction: row;
+        }
+        .flex-col {
+            display: flex;
+            flex-direction: column;
+        }
+
+        #main {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+        #path-editor {
+            border: 1px solid red;
+            /* height: 100%; */
+            flex-grow: 1;
+        }
+        #canvas-main {
+            border: 1px solid blue;
+            width: 75%;
             height: 100%;
         }
         #log {
@@ -30,6 +50,8 @@
             left: 1vmax;
             font-size: 12px;
         }
+
+        .segment {}
 
         #crosshair-v {
             background-color: #ffffff88;
@@ -60,10 +82,16 @@
 <body>
 
 
-<canvas id='canvas-main'></canvas>
+
+<main id='main' class='flex-row'>
+    <div id='path-editor'></div>
+    <canvas id='canvas-main'></canvas>
+</main>
 <div id='crosshair-v'></div>
 <div id='crosshair-h'></div>
 <div id='log'></div>
+
+
 
 <script type="text/javascript">
 
@@ -242,6 +270,36 @@
             ctx.closePath();
         }
     }
+
+    // class SegComponentwise {
+    //     constructor (component, relative) {
+    //         this.relative = relative;
+    //         this.reference = { x:0, y:0 };
+    //         this.component = x;
+    //     }
+    //     get svgStr () { return ''; }
+    //     setRelative (p) {
+    //         this.relative = true;
+    //         this.reference.x = p.x;
+    //         this.reference.y = p.y;
+    //     }
+    //     setAbsolute () {
+    //         this.relative = false;
+    //     }
+    //     draw () {}
+    // }
+    
+    // class SegHorizontal extends SegComponentwise {
+    //     constructor (x, relative=false) {
+    //         super(x, relative);
+    //         this.type = 'H';
+    //         // this._ -> (bool) relative, ({x,y}) reference, (float) component
+    //     }
+    //     get svgStr () { return `${this.relative ? 'h' : 'H'} ${this.component}`; }
+    //     draw () {
+    //         ctx.lineTo(this.component, this.reference.y);
+    //     }
+    // }
 
     class PathSVG {
         constructor (path) {
